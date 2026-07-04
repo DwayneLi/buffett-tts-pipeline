@@ -1,0 +1,35 @@
+{
+  "llm": {
+    "provider": "deepseek",
+    "api_key": "YOUR_API_KEY",
+    "api_url": "https://api.deepseek.com/chat/completions",
+    "model": "deepseek-chat",
+    "temperature": 0.7,
+    "max_tokens": 4096
+  },
+  "tts": {
+    "windows_host": "192.168.1.100",
+    "api_port": 9880,
+    "ref_audio_path": "C:\\audio\\buffett_ref_10s.wav",
+    "params": {
+      "text_lang": "zh",
+      "prompt_lang": "en",
+      "top_k": 5,
+      "top_p": 0.8,
+      "temperature": 0.8,
+      "speed_factor": 0.9,
+      "text_split_method": "cut0"
+    }
+  },
+  "audio": {
+    "output_dir": "./output",
+    "silence_duration_sec": 1.5,
+    "output_format": "mp3",
+    "bitrate": "128k"
+  },
+  "translate": {
+    "max_chunk_chars": 4000,
+    "enable_background_enhancement": true,
+    "max_background_notes_per_qa": 2
+  }
+}

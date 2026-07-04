@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 音频素材和输出（体积大，不纳入版本管理）
+output/
+*.wav
+*.mp3
+*.m4a
+*.flac
+
+# 配置文件（含 API Key）
+config/config.json
+.env
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# GPT-SoVITS 模型文件（第三方，体积大）
+GPT-SoVITS/
+pretrained_models/
