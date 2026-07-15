@@ -196,8 +196,8 @@ def _split_long(text: str, max_chars: int = MAX_UTTERANCE_CHARS) -> list[str]:
 
 def step_split_segments(translated_file: str) -> list[dict]:
     """Step 2: 把译文按角色标记拆成逐句 utterance，用于多音色合成。
-    解析 【提问人】【问题】【巴菲特】【芒格】【背景】 标记，每段发言单独成条；
-    提问人+问题合并为 narrator；超长段自动切分（PRD F4-02）。
+    解析 【问题 N】【背景】【巴菲特】【芒格】 标记，每段发言单独成条；
+    【问题 N】格式为"姓名提问：内容"，直接归入 narrator；超长段自动切分（PRD F4-02）。
     （背景段落默认复用 narrator 音色，可通过 ref_audio_paths.background 单独指定）
     """
     print("\n" + "="*60)

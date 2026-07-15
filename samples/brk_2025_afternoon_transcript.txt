@@ -1,9 +1,0 @@
-# INTRO: As the afternoon session is ending, Warren Buffett surprises everyone with his intention to step down as Berkshire's CEO at the end of the year. Before that he and Vice Chairman Greg Abel cover the U.S. government's "unsustainable" deficit spending, why the health care "tapeworm" won, and Abel's plans to be more active than Buffett in managing the company's subsidiaries.
-# KEY_CHAPTERS: 1,2,3,4,5
-# KEY_CHAPTER_TITLES:
-#   1. Buffett recommends documentary about Washington Post's Katharine Graham
-#   2. How Abel is learning from Buffett
-#   3. Abel: Berkshire's investment philosophy 'will not change'
-#   4. Berkshire can play major role in modernizing nation's electricity distribution
-#   5. Advice for young person: work hard and read a lot
-

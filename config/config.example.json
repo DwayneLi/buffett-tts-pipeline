@@ -35,6 +35,7 @@
   "translate": {
     "max_chunk_chars": 4000,
     "enable_background_enhancement": true,
-    "max_background_notes_per_qa": 2
+    "max_background_notes_per_qa": 1,
+    "max_background_chars": 350
   }
 }

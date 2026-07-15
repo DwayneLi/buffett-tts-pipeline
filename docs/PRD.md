@@ -122,10 +122,10 @@
 |------|------|----------|
 | F3-01 | Event-driven | When the translated text mentions a specific company stock, the system shall insert a background note with Berkshire's holding status at that time. |
 | F3-02 | Event-driven | When the text involves macroeconomic judgments, the system shall insert a background note with the interest rate/inflation/market environment at that time. |
-| F3-03 | Ubiquitous | The system shall limit background notes to at most 1-2 per Q&A pair to maintain listening flow. |
+| F3-03 | Ubiquitous | The system shall limit background notes to at most 1 per Q&A pair, and each note shall not exceed 350 characters. |
 | F3-04 | Unwanted | If the LLM is uncertain about a background fact, the system shall omit the note rather than fabricate information. |
 
-**背景补充标记格式**: `【📌 背景】补充内容`
+**背景补充标记格式**: `【背景】补充内容`（无 emoji，避免括号补充说明，自然融入正文）
 
 #### F4: 文本分段
 
