@@ -1,0 +1,9 @@
+# INTRO: In the morning session , Warren Buffett, and Berkshire Vice Chairmen Greg Abel and Ajit Jain discuss tariffs and trade, the company's long-term plans for its Japanese stock holdings, and why investors need to stay calm amid stock market swings that Buffett calls minor when compared much bigger moves over the decades.
+# KEY_CHAPTERS: 1,2,3,4,5
+# KEY_CHAPTER_TITLES:
+#   1. Welcome and a 'few figures'
+#   2. Directors introduced
+#   3. Apple's Tim Cook has made more money for Berkshire than I have
+#   4. 'She's made this whole thing work'
+#   5. Sales of Berkshire book benefit Omaha charity
+

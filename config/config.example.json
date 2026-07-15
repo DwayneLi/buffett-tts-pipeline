@@ -11,6 +11,11 @@
     "windows_host": "192.168.1.100",
     "api_port": 9880,
     "ref_audio_path": "C:\\audio\\buffett_ref_10s.wav",
+    "ref_audio_paths": {
+      "buffett": "C:\\audio\\buffett_ref.wav",
+      "munger": "C:\\audio\\munger_ref.wav",
+      "narrator": "C:\\audio\\narrator_ref.wav"
+    },
     "params": {
       "text_lang": "zh",
       "prompt_lang": "en",

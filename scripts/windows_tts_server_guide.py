@@ -1,4 +1,4 @@
-"""
+r"""
 Windows 端 GPT-SoVITS API 服务启动指南
 
 在 Windows 主机上运行此脚本，启动 API 服务供 Mac 远程调用。
