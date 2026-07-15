@@ -22,11 +22,16 @@ env/
 *~
 
 # 音频素材和输出（体积大，不纳入版本管理）
-output/
 *.wav
 *.mp3
 *.m4a
 *.flac
+
+# 临时/中间产物
+tmp*
+*_v[0-9].*
+*_translated.*
+*_ch[0-9]*_test.*
 
 # 配置文件（含 API Key）
 config/config.json
