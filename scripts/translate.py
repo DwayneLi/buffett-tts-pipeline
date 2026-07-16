@@ -419,6 +419,8 @@ def translate_file(input_path: str, output_path: str) -> None:
     # # CHAPTER: N. Title → [CHAPTER N] Title（供 LLM 翻译标题用）
     raw_text = re.sub(r'(?m)^#\s*CHAPTER:\s*(\d+)\.\s*(.*)', r'[CHAPTER \1] \2', raw_text)
     raw_text = re.sub(r'(?m)^\s*# (?:INTRO|KEY_CHAPTERS|KEY_CHAPTER_TITLES|MEETING|DATE).*$', '', raw_text)
+    # KEY_CHAPTER_TITLES 子行：空格压缩后变成 "# N. Title" 格式（如 "# 3. Why Class B..."）
+    raw_text = re.sub(r'(?m)^\s*#\s+\d+\.\s+.*$', '', raw_text)
     raw_text = re.sub(r'(?m)^\s*#\s{2,}.*$', '', raw_text)
     raw_text = re.sub(r'\n{3,}', '\n\n', raw_text)
 
