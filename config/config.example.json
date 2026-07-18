@@ -5,7 +5,20 @@
     "api_url": "https://api.deepseek.com/chat/completions",
     "model": "deepseek-chat",
     "temperature": 0.7,
-    "max_tokens": 4096
+    "max_tokens": 4096,
+
+    "smart": {
+      "provider": "qwen",
+      "api_key": "YOUR_SMART_API_KEY",
+      "model": "qwen-plus",
+      "_comment": "智能模型：分析章节含义、决定是否需要背景、生成背景内容"
+    },
+    "translate": {
+      "provider": "mt-turbo",
+      "api_key": "YOUR_TRANSLATE_API_KEY",
+      "model": "qwen-mt-turbo",
+      "_comment": "翻译模型：纯翻译，不负责分析和背景决策。MT-Turbo 便宜快速但不支持 system 角色"
+    }
   },
   "tts": {
     "windows_host": "192.168.1.100",

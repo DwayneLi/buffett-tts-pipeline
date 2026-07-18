@@ -1,12 +1,16 @@
 """
 巴菲特股东会问答 — 翻译 + 背景增强脚本
-使用 DeepSeek API 进行翻译，可替换为 OpenAI / 本地模型
+支持双模型架构：智能模型（分析章节+生成背景）+ 翻译模型（MT-Turbo 批量翻译）
 
 使用方法：
-    python translate.py input.txt --output output.json
-    python translate.py input.txt --provider glm     # 切换到智谱 GLM
-    python translate.py input.txt --provider qwen     # 切换到通义千问
-（也可不改命令行，直接在 config.json 的 llm.provider 填 glm / qwen / deepseek）
+    # 单模型模式（向后兼容）
+    python translate.py input.txt --provider qwen
+
+    # 双模型模式：智能模型分析 + MT-Turbo 翻译
+    python translate.py input.txt --smart-provider qwen --translate-provider mt-turbo
+
+    # 也可在 config.json 配置：
+    #   llm.smart.provider / llm.translate.provider
 
 输入：英文 transcript 文本文件
 输出：带翻译和背景补充的 JSON 文件
@@ -34,8 +38,10 @@ PROVIDERS = {
     "mt-turbo": {"label": "MT-Turbo", "api_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", "model": "qwen-mt-turbo"},
 }
 
-# 运行时配置（在 main 中按 命令行 > 环境变量 > config.json > 注册表 合并）
-API_CONFIG = {}
+# 运行时配置
+SMART_CONFIG = {}       # 智能模型（分析章节/生成背景）
+TRANSLATE_CONFIG = {}   # 翻译模型（批量翻译）
+USE_DUAL_MODEL = False  # 是否启用双模型模式
 
 # Buffett / Munger speaker name patterns (case-insensitive match)
 RE_BUFFETT_SPEAKER = re.compile(r'^(WARREN\s*BUFFETT|BUFFETT)\s*:', re.IGNORECASE)
@@ -43,7 +49,7 @@ RE_MUNGER_SPEAKER  = re.compile(r'^(CHARLIE\s*MUNGER|CHARLES\s*MUNGER|MUNGER)\s*
 
 
 def load_llm_config() -> dict:
-    """读取仓库 config.json / config.example.json 的 llm 段（若存在）。"""
+    """读取仓库 config.json / config.example.json 的完整 llm 段。"""
     candidates = [
         Path(__file__).resolve().parent.parent / "config" / "config.json",
         Path(__file__).resolve().parent.parent / "config" / "config.example.json",
@@ -57,15 +63,20 @@ def load_llm_config() -> dict:
     return {}
 
 
-def build_api_config(args) -> dict:
-    """合并优先级：命令行 > 环境变量 > config.json > 注册表"""
-    cfg = load_llm_config()
-    provider = args.provider or os.environ.get("LLM_PROVIDER") or cfg.get("provider") or "deepseek"
+def _resolve_provider_config(provider: str, api_key_override: str = None,
+                              cfg_section: dict = None, env_prefix: str = "") -> dict:
+    """解析单个 provider 的配置：命令行 > 环境变量 > config.json.llm.{section} > 注册表"""
+    cfg_section = cfg_section or {}
     entry = PROVIDERS.get(provider, {})
 
-    api_url = os.environ.get("LLM_API_URL") or entry.get("api_url") or cfg.get("api_url")
-    model = os.environ.get("LLM_MODEL") or entry.get("model") or cfg.get("model")
-    api_key = args.api_key or os.environ.get("LLM_API_KEY") or cfg.get("api_key") or "your-api-key-here"
+    api_url = (os.environ.get(f"{env_prefix}LLM_API_URL") or
+               cfg_section.get("api_url") or entry.get("api_url") or "")
+    model = (os.environ.get(f"{env_prefix}LLM_MODEL") or
+             cfg_section.get("model") or entry.get("model") or "")
+    api_key = (api_key_override or
+               os.environ.get(f"{env_prefix}LLM_API_KEY") or
+               cfg_section.get("api_key") or "")
+
     return {
         "provider": provider,
         "label": entry.get("label", provider),
@@ -75,6 +86,91 @@ def build_api_config(args) -> dict:
     }
 
 
+def build_api_config(args) -> tuple[dict, dict, bool]:
+    """构建双模型配置，返回 (smart_config, translate_config, use_dual)。
+
+    向后兼容：如果未配置双模型，translate_config 即原单模型配置。
+    """
+    cfg = load_llm_config()
+
+    # ---- 智能模型 ----
+    smart_section = cfg.get("smart", {}) if isinstance(cfg, dict) else {}
+    smart_provider = (args.smart_provider or
+                      os.environ.get("LLM_SMART_PROVIDER") or
+                      smart_section.get("provider") or "")
+    smart_cfg = _resolve_provider_config(
+        smart_provider or "qwen",
+        api_key_override=args.api_key,
+        cfg_section=smart_section,
+        env_prefix="LLM_SMART_",
+    ) if smart_provider else {}
+
+    # ---- 翻译模型 ----
+    trans_section = cfg.get("translate", {}) if isinstance(cfg, dict) else {}
+    trans_provider = (args.translate_provider or
+                      os.environ.get("LLM_TRANSLATE_PROVIDER") or
+                      trans_section.get("provider") or
+                      args.provider or
+                      os.environ.get("LLM_PROVIDER") or
+                      cfg.get("provider") or "deepseek")
+    trans_cfg = _resolve_provider_config(
+        trans_provider,
+        api_key_override=args.api_key,
+        cfg_section=trans_section,
+        env_prefix="LLM_TRANSLATE_",
+    )
+
+    # 判断是否真正启用双模型
+    use_dual = bool(smart_cfg and smart_cfg.get("api_key") and
+                    trans_cfg.get("api_key") and
+                    smart_cfg.get("provider") != trans_cfg.get("provider"))
+
+    return smart_cfg, trans_cfg, use_dual
+
+
+# ============ Prompts ============
+
+# --- 智能模型 Prompt：章节分析 ---
+SMART_SYSTEM_PROMPT = """你是一位伯克希尔·哈撒韦投资研究专家，精通巴菲特和芒格的投资理念。
+
+## 任务
+分析以下股东大会章节的英文原文，输出结构化分析结果。
+
+## 要求
+1. **章节标题**：将英文标题意译为中文（≤20字），保留原标题含义
+2. **背景补充**：识别章节中需要补充背景的关键主题（如公司投资、行业术语、历史事件）。
+   每条背景 ≤350 字，不确定则省略，绝不编造。
+   如章节中没有需要补充背景的主题，返回空数组。
+3. **术语对照**：提取章节中出现的关键公司名/人名/术语（5条以内），建立"中文即English，简称XX"对照。
+
+## 输出格式
+严格输出 JSON（不要 markdown 代码块）：
+{{"chapter_title_cn": "标题", "backgrounds": [{{"topic": "主题", "text": "背景"}}], "glossary": ["- EN → 中文"]}}
+
+已补充背景的主题（不要重复）：
+{bg_topics}
+
+本章英文原文：
+{chapter_text}"""
+
+# --- MT-Turbo 简化翻译 Prompt ---
+MT_SYSTEM_PROMPT = """你是翻译。将伯克希尔股东大会记录译为自然的中文。
+
+标记处理：
+- [SUMMARY] 开头 → 输出【会议摘要】后接翻译
+- [CHAPTER N] 标题 → 输出【第N章】中文标题
+- [STATEMENT N] → 忽略此标记，直接翻译后续内容
+- [CONTINUATION] → 忽略此标记，直接翻译后续内容
+- [DIALOGUE N]...[/DIALOGUE N] → 翻译为连贯交替对话
+- QUESTION C-Q: → 输出【问题 C-Q】提问人：翻译
+- WARREN BUFFETT: → 【巴菲特】
+- CHARLIE MUNGER: → 【芒格】
+- 其他 NAME: → 【提问人姓名】
+
+如文前给了背景和术语，在翻译中自然融入。
+翻译要口语化自然，直接输出翻译正文。"""
+
+# --- 单模型模式 Prompt（向后兼容）---
 SYSTEM_PROMPT = """你是一位精通巴菲特投资哲学和伯克希尔·哈撒韦历史的翻译专家。
 
 ## 任务
@@ -261,15 +357,92 @@ def extract_background_topics(translated_text: str) -> list[str]:
     return topics
 
 
-def call_llm(system_prompt: str, user_prompt: str) -> str:
-    """调用 LLM API"""
+def build_mt_user_prompt(text: str, backgrounds: list[dict] = None,
+                          glossary: list[str] = None) -> str:
+    """构建 MT-Turbo 翻译 prompt（简化版，无复杂规则）。"""
+    parts = []
+
+    if glossary:
+        parts.append("术语对照（严格遵循）：\n" + "\n".join(glossary))
+
+    if backgrounds:
+        lines = ["可融入翻译的背景信息："]
+        for b in backgrounds:
+            lines.append(f"  [{b['topic']}] {b['text']}")
+        parts.append("\n".join(lines))
+
+    parts.append(f"原文：\n{text}")
+
+    return "\n\n".join(parts)
+
+
+def analyze_chapter(chapter_text: str, chapter_num: int,
+                     bg_topics: list[str] = None) -> dict:
+    """调用智能模型分析章节：标题翻译 + 背景生成 + 术语提取。
+
+    返回 {"title_cn": str, "backgrounds": [dict], "glossary": [str]}
+    失败时返回空结果。
+    """
+    config = SMART_CONFIG
     headers = {
-        "Authorization": f"Bearer {API_CONFIG['api_key']}",
+        "Authorization": f"Bearer {config['api_key']}",
         "Content-Type": "application/json",
     }
 
-    # MT-Turbo 不支持 system 角色，将 system prompt 合并到 user message 头部
-    provider = API_CONFIG.get("provider", "")
+    prompt = SMART_SYSTEM_PROMPT.format(
+        bg_topics="\n".join(f"- {t}" for t in (bg_topics or [])) or "(无)",
+        chapter_text=chapter_text[:8000],  # 截断长章节
+    )
+
+    payload = {
+        "model": config["model"],
+        "messages": [
+            {"role": "system", "content": "You are an expert analyst. Output JSON only."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.3,
+        "max_tokens": 2048,
+    }
+
+    print(f"🧠 智能模型分析 Ch.{chapter_num} ({config['label']}/{config['model']})...")
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = requests.post(config["api_url"], headers=headers, json=payload, timeout=120)
+            resp.raise_for_status()
+            data = resp.json()
+            content = data["choices"][0]["message"]["content"]
+            # 移除可能的 markdown 代码块
+            content = re.sub(r'^```(?:json)?\s*|```\s*$', '', content.strip())
+            result = json.loads(content)
+            print(f"   ✅ 标题:{result.get('chapter_title_cn','?')} | "
+                  f"背景:{len(result.get('backgrounds',[]))}条 | 术语:{len(result.get('glossary',[]))}条")
+            return result
+        except (requests.RequestException, json.JSONDecodeError, KeyError) as e:
+            if attempt < MAX_RETRIES:
+                wait = BACKOFF_BASE ** attempt
+                print(f"   ⚠️  分析失败 ({e})，{wait:.0f}s 后重试...")
+                time.sleep(wait)
+            else:
+                print(f"   ❌ 分析失败，跳过背景生成: {e}")
+
+    return {"chapter_title_cn": "", "backgrounds": [], "glossary": []}
+
+
+def call_llm(system_prompt: str, user_prompt: str, use_translate_config: bool = False) -> str:
+    """调用 LLM API。use_translate_config=True 时使用翻译模型配置。"""
+    config = TRANSLATE_CONFIG if use_translate_config else SMART_CONFIG
+    # 兜底：如果翻译配置为空（单模型模式），回退到智能配置
+    if use_translate_config and not config.get("api_key"):
+        config = SMART_CONFIG
+
+    headers = {
+        "Authorization": f"Bearer {config['api_key']}",
+        "Content-Type": "application/json",
+    }
+
+    # MT-Turbo 不支持 system 角色
+    provider = config.get("provider", "")
     if provider == "mt-turbo":
         messages = [
             {"role": "user", "content": f"{system_prompt}\n\n---\n\n{user_prompt}"},
@@ -281,19 +454,19 @@ def call_llm(system_prompt: str, user_prompt: str) -> str:
         ]
 
     payload = {
-        "model": API_CONFIG["model"],
+        "model": config["model"],
         "messages": messages,
         "temperature": 0.7,
         "max_tokens": 4096,
     }
 
-    print(f"📡 正在调用 {API_CONFIG['label']} API ({API_CONFIG['model']})...")
+    print(f"📡 正在调用 {config['label']} API ({config['model']})...")
 
     response = None
     last_err = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response = requests.post(API_CONFIG["api_url"], headers=headers, json=payload, timeout=120)
+            response = requests.post(config["api_url"], headers=headers, json=payload, timeout=120)
             response.raise_for_status()
             break
         except (requests.RequestException, requests.Timeout) as e:
@@ -416,7 +589,10 @@ def split_transcript(text: str, max_chunk_chars: int = 4000) -> list[str]:
 
 
 def translate_file(input_path: str, output_path: str) -> None:
-    """主流程：读取 → 预处理 → 编号注入 → 分段 → 翻译 → 保存"""
+    """主流程：
+    双模型模式：chunks 按 chapter 分组 → 智能模型分析每章 → MT-Turbo 翻译每段
+    单模型模式（向后兼容）：逐段翻译
+    """
     with open(input_path, "r", encoding="utf-8") as f:
         raw_text = f.read()
 
@@ -427,12 +603,9 @@ def translate_file(input_path: str, output_path: str) -> None:
     print(f"🧹 预处理后: {len(raw_text)} 字符")
 
     # Step 2: 保留章节标题 + SUMMARY + 去掉其他元数据行
-    # # CHAPTER: N. Title → [CHAPTER N] Title（供 LLM 翻译标题用）
     raw_text = re.sub(r'(?m)^#\s*CHAPTER:\s*(\d+)\.\s*(.*)', r'[CHAPTER \1] \2', raw_text)
-    # # INTRO: text → [SUMMARY] text（保留会议摘要，供 LLM 翻译为概述）
     raw_text = re.sub(r'(?m)^\s*#\s*INTRO:\s*', '[SUMMARY] ', raw_text)
     raw_text = re.sub(r'(?m)^\s*# (?:KEY_CHAPTERS|KEY_CHAPTER_TITLES|MEETING|DATE).*$', '', raw_text)
-    # KEY_CHAPTER_TITLES 子行：空格压缩后变成 "# N. Title" 格式（如 "# 3. Why Class B..."）
     raw_text = re.sub(r'(?m)^\s*#\s+\d+\.\s+.*$', '', raw_text)
     raw_text = re.sub(r'(?m)^\s*#\s{2,}.*$', '', raw_text)
     raw_text = re.sub(r'\n{3,}', '\n\n', raw_text)
@@ -444,69 +617,147 @@ def translate_file(input_path: str, output_path: str) -> None:
 
     # Step 4: 分段
     chunks = split_transcript(raw_text)
-    # 确保每个 chunk 都有开头标记：不以 QUESTION/STATEMENT/CONTINUATION/SUMMARY 开头的补 [CONTINUATION]
     for idx in range(len(chunks)):
         if not re.match(r'(QUESTION\s+\d+-\d+:|\[STATEMENT|\[CONTINUATION\]|\[SUMMARY\])', chunks[idx].lstrip()):
             chunks[idx] = "[CONTINUATION] " + chunks[idx]
     print(f"✂️  切分为 {len(chunks)} 段")
 
-    # Step 5: 逐段翻译
-    all_results = []
-    glossary = []
-    bg_topics = []        # 全局背景去重，跨 chapter 不重置
-    last_chapter = 0
-    for i, chunk in enumerate(chunks):
-        # 检测章节切换（仅用于日志显示，不再重置背景去重）
+    # ========== 按 chapter 分组 ==========
+    chapter_groups = []  # [(chapter_num, [chunk_idx, ...]), ...]
+    current_chap = None
+    current_group = []
+    for idx, chunk in enumerate(chunks):
         chap_m = re.search(r'\[CHAPTER\s*(\d+)\]', chunk)
-        cur_chapter = int(chap_m.group(1)) if chap_m else last_chapter
-        last_chapter = cur_chapter
+        chap = int(chap_m.group(1)) if chap_m else (current_chap or 0)
+        if chap != current_chap and current_group:
+            chapter_groups.append((current_chap or 0, current_group))
+            current_group = []
+        current_chap = chap
+        current_group.append(idx)
+    if current_group:
+        chapter_groups.append((current_chap or 0, current_group))
 
-        extra_info = []
-        if glossary:
-            extra_info.append(f"术语表: {len(glossary)} 条")
-        if bg_topics:
-            extra_info.append(f"已补背景: {len(bg_topics)} 个")
-        extra_str = f" [{', '.join(extra_info)}]" if extra_info else ""
+    # ========== Step 5: 翻译 ==========
+    all_results = [None] * len(chunks)
+    glossary = []
+    bg_topics = []
+    # 已分析过的章节号集合（智能模型分析结果也缓存）
+    chapter_analysis = {}  # {chapter_num: {"title_cn":..., "backgrounds":..., "glossary":...}}
 
-        print(f"\n{'='*50}")
-        print(f"🔄 翻译第 {i+1}/{len(chunks)} 段 (Ch.{cur_chapter}, {len(chunk)} 字符){extra_str}...")
+    if USE_DUAL_MODEL:
+        print(f"\n🔀 双模型模式：{SMART_CONFIG['label']} 分析 + {TRANSLATE_CONFIG['label']} 翻译")
+        print(f"   共 {len(chapter_groups)} 个章节组")
 
-        try:
-            result = call_llm(
-                SYSTEM_PROMPT,
-                build_user_prompt(chunk, glossary if glossary else None, bg_topics if bg_topics else None, cur_chapter)
-            )
-            all_results.append({
-                "index": i,
-                "original_length": len(chunk),
-                "translated": result,
-            })
-            new_terms = extract_glossary(result)
-            for t in new_terms:
-                if t not in glossary:
-                    glossary.append(t)
-            new_topics = extract_background_topics(result)
-            for t in new_topics:
-                if t not in bg_topics:
-                    bg_topics.append(t)
-            preview = result[:200] + "..." if len(result) > 200 else result
-            print(f"✅ 完成。预览: {preview}")
-        except Exception as e:
-            print(f"❌ 第 {i+1} 段翻译失败: {e}")
-            all_results.append({
-                "index": i,
-                "original_length": len(chunk),
-                "translated": f"[翻译失败] {chunk[:500]}...",
-                "error": str(e),
-            })
+        for chap_num, indices in chapter_groups:
+            # --- 智能模型分析章节（1次）---
+            if chap_num not in chapter_analysis:
+                chap_text = "\n\n".join(chunks[i] for i in indices if i < len(chunks))
+                analysis = analyze_chapter(chap_text, chap_num, bg_topics)
+                chapter_analysis[chap_num] = analysis
+                # 更新全局 glossary/bg_topics
+                for g in analysis.get("glossary", []):
+                    if g not in glossary:
+                        glossary.append(g)
+                for b in analysis.get("backgrounds", []):
+                    topic = b.get("topic", "")[:60]
+                    if topic and topic not in bg_topics:
+                        bg_topics.append(topic)
+            else:
+                analysis = chapter_analysis[chap_num]
+
+            # --- MT-Turbo 逐段翻译（N次）---
+            for idx in indices:
+                chunk = chunks[idx]
+                chap_info = f"Ch.{chap_num}"
+                extra_info = []
+                if glossary:
+                    extra_info.append(f"术语:{len(glossary)}条")
+                if bg_topics:
+                    extra_info.append(f"背景:{len(bg_topics)}条")
+                extra_str = f" [{', '.join(extra_info)}]" if extra_info else ""
+
+                print(f"\n{'='*50}")
+                print(f"🔄 MT-Turbo 翻译 {idx+1}/{len(chunks)} ({chap_info}, {len(chunk)}字符){extra_str}...")
+
+                try:
+                    result = call_llm(
+                        MT_SYSTEM_PROMPT,
+                        build_mt_user_prompt(chunk, analysis.get("backgrounds"), glossary if glossary else None),
+                        use_translate_config=True,
+                    )
+                    all_results[idx] = {
+                        "index": idx,
+                        "original_length": len(chunk),
+                        "translated": result,
+                        "chapter": chap_num,
+                    }
+                    preview = result[:200] + "..." if len(result) > 200 else result
+                    print(f"✅ 完成。预览: {preview}")
+                except Exception as e:
+                    print(f"❌ 翻译失败: {e}")
+                    all_results[idx] = {
+                        "index": idx,
+                        "original_length": len(chunk),
+                        "translated": f"[翻译失败] {chunk[:500]}...",
+                        "error": str(e),
+                    }
+    else:
+        # ===== 单模型模式（向后兼容）=====
+        last_chapter = 0
+        for i, chunk in enumerate(chunks):
+            chap_m = re.search(r'\[CHAPTER\s*(\d+)\]', chunk)
+            cur_chapter = int(chap_m.group(1)) if chap_m else last_chapter
+            last_chapter = cur_chapter
+
+            extra_info = []
+            if glossary:
+                extra_info.append(f"术语表: {len(glossary)} 条")
+            if bg_topics:
+                extra_info.append(f"已补背景: {len(bg_topics)} 个")
+            extra_str = f" [{', '.join(extra_info)}]" if extra_info else ""
+
+            print(f"\n{'='*50}")
+            print(f"🔄 翻译第 {i+1}/{len(chunks)} 段 (Ch.{cur_chapter}, {len(chunk)} 字符){extra_str}...")
+
+            try:
+                result = call_llm(
+                    SYSTEM_PROMPT,
+                    build_user_prompt(chunk, glossary if glossary else None, bg_topics if bg_topics else None, cur_chapter),
+                )
+                all_results[i] = {
+                    "index": i,
+                    "original_length": len(chunk),
+                    "translated": result,
+                }
+                new_terms = extract_glossary(result)
+                for t in new_terms:
+                    if t not in glossary:
+                        glossary.append(t)
+                new_topics = extract_background_topics(result)
+                for t in new_topics:
+                    if t not in bg_topics:
+                        bg_topics.append(t)
+                preview = result[:200] + "..." if len(result) > 200 else result
+                print(f"✅ 完成。预览: {preview}")
+            except Exception as e:
+                print(f"❌ 第 {i+1} 段翻译失败: {e}")
+                all_results[i] = {
+                    "index": i,
+                    "original_length": len(chunk),
+                    "translated": f"[翻译失败] {chunk[:500]}...",
+                    "error": str(e),
+                }
 
     # 保存
     output_data = {
         "source_file": os.path.basename(input_path),
         "total_chunks": len(chunks),
-        "api_provider": API_CONFIG["provider"],
-        "api_model": API_CONFIG["model"],
-        "results": all_results,
+        "dual_model": USE_DUAL_MODEL,
+        "smart_provider": SMART_CONFIG.get("label", "") if USE_DUAL_MODEL else "",
+        "smart_model": SMART_CONFIG.get("model", "") if USE_DUAL_MODEL else "",
+        "translate_provider": TRANSLATE_CONFIG.get("label", "") or SMART_CONFIG.get("label", ""),
+        "translate_model": TRANSLATE_CONFIG.get("model", "") or SMART_CONFIG.get("model", ""),
+        "results": [r for r in all_results if r is not None],
     }
 
     with open(output_path, "w", encoding="utf-8") as f:
@@ -515,41 +766,65 @@ def translate_file(input_path: str, output_path: str) -> None:
     txt_path = output_path.replace(".json", ".txt")
     with open(txt_path, "w", encoding="utf-8") as f:
         for r in all_results:
-            f.write(r["translated"])
-            f.write("\n\n")
+            if r is not None:
+                f.write(r["translated"])
+                f.write("\n\n")
 
     print(f"\n{'='*50}")
     print(f"✅ 翻译完成！")
     print(f"   JSON 输出: {output_path}")
     print(f"   文本输出: {txt_path}")
 
-    total_original = sum(r["original_length"] for r in all_results)
-    total_translated = sum(len(r["translated"]) for r in all_results)
+    total_original = sum((r or {}).get("original_length", 0) for r in all_results if r)
+    total_translated = sum(len((r or {}).get("translated", "")) for r in all_results if r)
     print(f"   原文总字符: {total_original}")
     print(f"   译文总字符: {total_translated}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="巴菲特股东会问答翻译 + 背景增强")
+    parser = argparse.ArgumentParser(description="巴菲特股东会问答翻译 + 背景增强（支持双模型）")
     parser.add_argument("input", help="输入的英文 transcript 文本文件路径")
     parser.add_argument("--output", "-o", default=None, help="输出 JSON 文件路径（默认：input_translated.json）")
-    parser.add_argument("--api-key", help="LLM API Key（也可通过 LLM_API_KEY 环境变量 / config.json 设置）")
-    parser.add_argument("--provider", default=None, choices=list(PROVIDERS.keys()),
-                        help="切换 LLM 服务商：deepseek / glm / qwen / openai（也可在 config.json 的 llm.provider 设置）")
+    parser.add_argument("--api-key", help="LLM API Key（两个模型共用，也可通过环境变量 / config.json 分别设置）")
+
+    # 双模型参数
+    parser.add_argument("--smart-provider", default=None,
+                        choices=list(PROVIDERS.keys()),
+                        help="智能模型 provider（分析章节/生成背景），如 --smart-provider qwen")
+    parser.add_argument("--translate-provider", default=None,
+                        choices=list(PROVIDERS.keys()),
+                        help="翻译模型 provider（批量翻译），如 --translate-provider mt-turbo")
+
+    # 向后兼容的单模型参数
+    parser.add_argument("--provider", default=None,
+                        choices=list(PROVIDERS.keys()),
+                        help="[单模型模式] LLM provider")
 
     args = parser.parse_args()
 
-    global API_CONFIG
-    API_CONFIG = build_api_config(args)
+    global SMART_CONFIG, TRANSLATE_CONFIG, USE_DUAL_MODEL
+    smart_cfg, trans_cfg, use_dual = build_api_config(args)
 
-    if API_CONFIG["api_key"] in (None, "", "your-api-key-here"):
+    SMART_CONFIG = smart_cfg or trans_cfg
+    TRANSLATE_CONFIG = trans_cfg or smart_cfg or {}
+    USE_DUAL_MODEL = use_dual
+
+    # API Key 校验
+    api_key = SMART_CONFIG.get("api_key", "")
+    if api_key in (None, "", "your-api-key-here"):
         print("⚠️  未找到 LLM API Key，请任选一种方式提供：")
-        print("   1) config.json 的 llm.api_key 填入")
-        print("   2) 环境变量 LLM_API_KEY=xxx")
+        print("   1) config.json 的 llm.smart.api_key / llm.translate.api_key")
+        print("   2) 环境变量 LLM_SMART_API_KEY / LLM_TRANSLATE_API_KEY / LLM_API_KEY")
         print("   3) 命令行 --api-key xxx")
         return
 
-    print(f"🤖 使用模型: {API_CONFIG['label']} / {API_CONFIG['model']}")
+    if USE_DUAL_MODEL:
+        print(f"🧠 智能: {SMART_CONFIG['label']} / {SMART_CONFIG['model']}")
+        print(f"🌐 翻译: {TRANSLATE_CONFIG['label']} / {TRANSLATE_CONFIG['model']}")
+    else:
+        label = SMART_CONFIG.get("label", "Unknown")
+        model = SMART_CONFIG.get("model", "Unknown")
+        print(f"🤖 使用模型: {label} / {model}")
 
     if args.output is None:
         input_stem = Path(args.input).stem
