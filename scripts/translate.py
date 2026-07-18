@@ -31,6 +31,7 @@ PROVIDERS = {
     "glm":      {"label": "智谱 GLM", "api_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions", "model": "glm-4-flash"},
     "qwen":     {"label": "通义千问", "api_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", "model": "qwen-plus"},
     "openai":   {"label": "OpenAI",   "api_url": "https://api.openai.com/v1/chat/completions", "model": "gpt-4o-mini"},
+    "mt-turbo": {"label": "MT-Turbo", "api_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", "model": "qwen-mt-turbo"},
 }
 
 # 运行时配置（在 main 中按 命令行 > 环境变量 > config.json > 注册表 合并）
@@ -267,12 +268,21 @@ def call_llm(system_prompt: str, user_prompt: str) -> str:
         "Content-Type": "application/json",
     }
 
-    payload = {
-        "model": API_CONFIG["model"],
-        "messages": [
+    # MT-Turbo 不支持 system 角色，将 system prompt 合并到 user message 头部
+    provider = API_CONFIG.get("provider", "")
+    if provider == "mt-turbo":
+        messages = [
+            {"role": "user", "content": f"{system_prompt}\n\n---\n\n{user_prompt}"},
+        ]
+    else:
+        messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
-        ],
+        ]
+
+    payload = {
+        "model": API_CONFIG["model"],
+        "messages": messages,
         "temperature": 0.7,
         "max_tokens": 4096,
     }
